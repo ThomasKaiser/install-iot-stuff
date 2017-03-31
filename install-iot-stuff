@@ -19,17 +19,16 @@ PreRequisits() {
 		(umask 066 && mkdir ${MyTempDir}) || (echo "Failed to create temp dir. Aborting" >&2 ; exit 1)
 	fi
 	chmod 711 "${MyTempDir}"
-	trap "rm -rf \"${MyTempDir}\" ; exit 0" 0 1 2 3 15
+	# trap "rm -rf \"${MyTempDir}\" ; exit 0" 0 1 2 3 15
 	
 	# Install missing dependencies
-	(which curl >/dev/null 2>&1 || apt-get -f -qq -y install curl) &
+	which curl >/dev/null 2>&1 || apt-get -f -qq -y install curl
 	
 	# log current installed packages and other stuff
 	dpkg -l >"${MyTempDir}/packages-now.txt" &
-	echo -e "NodeRedMem=$(( $(free | awk -F" " '/^Mem:/ {print $2}') / 2048 ))" >"${MyTempDir}/environment.txt"
+	echo -e "NodeRedMem=$(( $(free | awk -F" " '/^Mem:/ {print $2}') / 3072 ))" >"${MyTempDir}/environment.txt"
 	echo -e "DistroArchitecture=$(dpkg --print-architecture)" >>"${MyTempDir}/environment.txt"
 	echo -e "CPUArchitecture=$(uname -m)" >>"${MyTempDir}/environment.txt"
-	
 	
 	# get some package names
 	apt-cache search php | grep sqlite | head -n1 | cut -f1 -d' ' >"${MyTempDir}/php-sqlite.pkg" &
@@ -43,7 +42,6 @@ PreRequisits() {
 		echo -e "and then call \"sudo ${0##*/} $@\" again. Exiting" >&2
 		exit 1
 	fi
-		
 } # PreRequisits
 
 GetPhpLiteAdminURL() {
@@ -51,9 +49,18 @@ GetPhpLiteAdminURL() {
 } # GetPhpLiteAdminURL
 
 InstallApache() {
+	echo -e "\nInstalling Apache2, SQLite, PHP and friends now (this can take some time)... \c"
 	# use meta package names so we get the right version on every distro
 	apt-get -f -qq -y install apache2 libapache2-mod-php sqlite3 $(cat "${MyTempDir}/php-sqlite.pkg")
 } # InstallApache
+
+InstallWebmin() {
+	echo -e "\nInstalling Webmin now (this can take some time)... \c"
+	curl -sL http://www.webmin.com/jcameron-key.asc | apt-key add -
+    echo "deb http://download.webmin.com/download/repository sarge contrib" >/etc/apt/sources.list.d/webmin.list
+    apt-get -f -qq -y update
+    apt-get -f -qq -y --no-install-recommends install webmin
+} # 
 
 PreRequisits
 
