@@ -1,0 +1,60 @@
+#!/bin/bash
+# 
+# Nothing to see here, just snippets
+
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+PreRequisits() {
+	UserHome="$(awk -F":" "/^${SUDO_USER}:/ {print \$6}" < /etc/passwd)"
+	if [ ! -d "${UserHome}" ]; then
+		echo -e "There's something wrong. Please step back, create an unprivileged" >&2
+		echo -e "user account and then call \"sudo ${0##*/} $@\" again. Exiting" >&2
+		exit 1
+	fi
+	
+	# create a safe temporary dir
+	MyTempDir=$(mktemp -d /tmp/${0##*/}.XXXXXX)
+	if [ ! -d "${MyTempDir}" ]; then
+		MyTempDir=/tmp/${0##*/}.$RANDOM.$RANDOM.$RANDOM.$$
+		(umask 066 && mkdir ${MyTempDir}) || (echo "Failed to create temp dir. Aborting" >&2 ; exit 1)
+	fi
+	chmod 711 "${MyTempDir}"
+	trap "rm -rf \"${MyTempDir}\" ; exit 0" 0 1 2 3 15
+	
+	# Install missing dependencies
+	(which curl >/dev/null 2>&1 || apt-get -f -qq -y install curl) &
+	
+	# log current installed packages and other stuff
+	dpkg -l >"${MyTempDir}/packages-now.txt" &
+	echo -e "NodeRedMem=$(( $(free | awk -F" " '/^Mem:/ {print $2}') / 2048 ))" >"${MyTempDir}/environment.txt"
+	echo -e "DistroArchitecture=$(dpkg --print-architecture)" >>"${MyTempDir}/environment.txt"
+	echo -e "CPUArchitecture=$(uname -m)" >>"${MyTempDir}/environment.txt"
+	
+	
+	# get some package names
+	apt-cache search php | grep sqlite | head -n1 | cut -f1 -d' ' >"${MyTempDir}/php-sqlite.pkg" &
+	
+	# export some internal functions
+	export -f GetPhpLiteAdminURL
+	
+	phpLiteAdmin_URL=$(su ${SUDO_USER} -c "bash -c GetPhpLiteAdminURL")
+	if [ -z ${phpLiteAdmin_URL} ]; then
+		echo -e "There's something wrong. Please check/fix your internet connectivity" >&2
+		echo -e "and then call \"sudo ${0##*/} $@\" again. Exiting" >&2
+		exit 1
+	fi
+		
+} # PreRequisits
+
+GetPhpLiteAdminURL() {
+	curl -sL 'https://www.phpliteadmin.org/download/' | awk -F'"' '/bitbucket.org\/phpliteadmin\/public\/downloads\/phpLiteAdmin/ {print $2}'
+} # GetPhpLiteAdminURL
+
+InstallApache() {
+	# use meta package names so we get the right version on every distro
+	apt-get -f -qq -y install apache2 libapache2-mod-php sqlite3 $(cat "${MyTempDir}/php-sqlite.pkg")
+} # InstallApache
+
+PreRequisits
+
+# Main "$@"
