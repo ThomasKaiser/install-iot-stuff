@@ -1,8 +1,89 @@
 #!/bin/bash
 # 
-# Nothing to see here, just snippets
+# Nothing to see here, yet just snippets
+#
+# Test equipment: the goal is to test through all relevant Debian/Ubuntu variants
+# (and prepare supporting newer distros by taking care of their conventions)
+# 
+# Potential test candidates:
+#
+# - Armbian (Debian Jessie) running on H3 with legacy kernel (32-bit)
+# - Armbian (Ubuntu Xenial) running on ODROID-C2 (64-bit)
+# - Raspbian (Debian Jessie) running on OPi Zero (32-bit, ARMv6)
+# - Debian Stretch in 64-bit: https://github.com/bamarni/pi64 ?
+#
+# No decision yet
 
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Main() {
+	export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+	# we need at least one argument
+	[ $# -eq 0 ] && DisplayUsage
+
+	# let's parse the command line arguments
+	while getopts 'ha:p:' c ; do
+		case ${c} in
+			h)
+				# display short help
+				DisplayUsage
+				;;
+			a)
+				# read name of admin account
+				adminname=${OPTARG}
+				;;
+			p)
+				# read passwd of admin account
+				adminpass=${OPTARG}
+				;;
+		esac
+	done
+	shift "$((OPTIND - 1))"
+	[ "X${adminname}" = "X" ] && adminname="admin"
+	export adminname adminpass
+
+	Packages="$*"
+
+	exit 0
+	PreRequisits
+} # Main
+
+DisplayUsage() {
+	# check if stdout is a terminal...
+	if test -t 1; then
+		# see if it supports colors...
+		ncolors=$(tput colors)
+		if test -n "$ncolors" && test $ncolors -ge 8; then
+			BOLD="$(tput bold)"
+			NC='\033[0m' # No Color
+			LGREEN='\033[1;32m'
+		fi
+	fi
+	echo -e "Usage: ${BOLD}${0##*/} [-h] [-a adm] [-p pwd] [pkg] [pkg] [pkg] ...${NC}\n"
+	echo -e "${BOLD}${0##*/}${NC} can be used to install the packages listed below conveniently."
+	echo -e "Just use 1 to many as command line arguments in any order. To install for example"
+	echo -e "Webmin and NodeJS you would do an ${BOLD}${0##*/} webmin nodejs${NC}\n"
+	echo -e "Please note that some packages require providing the name of an admin account"
+	echo -e "and a password using ${BOLD}-a${NC} and ${BOLD}-p${NC} respectively. These are ${BOLD}apache${NC} (phpliteadmin),"
+	echo -e "${BOLD}nodered${NC} and ${BOLD}mosquitto${NC}. In case you want to install these please use ${BOLD}-p${NC} to"
+	echo -e "provide an administrative password for authorization and also ${BOLD}-a${NC} if you're"
+	echo -e "not satisfied with \"admin\" being used as default account name.\n\nThe following packages are currently supported:\n"
+
+	# display capabilities dynamically, we parse ourself for installer functions (their
+	# name has to start with 'Install') and use the comment in function section to explain
+	# what will be installed
+	Whitespace='         '
+	awk -F'(' '/^Install/ {print $1}' "$0" | sort | while read ; do
+		PackageName="$(echo "${REPLY}" | tr '[:upper:]' '[:lower:]' | sed 's/^install//')"
+		Description="$(grep "^${REPLY}" "$0" | cut -f2 -d#)"
+		printf "${BOLD}%s %s ${NC}${Description}\n" ${PackageName} "${Whitespace:${#PackageName}}"
+	done
+	echo -e "\nExamples:\n'${BOLD}${0##*/} -p secret apache${NC}' will use 'secret' as password for"
+	echo -e "phpliteadmin while '${BOLD}${0##*/} -a boss -p strange mosquitto${NC}' will set"
+	echo -e "up Mosquitto with logon credentials boss:strange. If you want to use different"
+	echo -e "logins for different services you would need to call this installer more than"
+	echo -e "once sind otherwise same credentials will be used for all services (recommended).\n"
+	exit 0
+} # DisplayUsage
 
 PreRequisits() {
 	# TODO: If ${SUDO_USER} is not set then check whether installation
@@ -15,7 +96,7 @@ PreRequisits() {
 		echo -e "user account and then call \"sudo ${0##*/} $@\" again. Exiting" >&2
 		exit 1
 	fi
-	
+
 	# create a safe temporary dir
 	MyTempDir=$(mktemp -d /tmp/${0##*/}.XXXXXX)
 	if [ ! -d "${MyTempDir}" ]; then
@@ -24,24 +105,23 @@ PreRequisits() {
 	fi
 	chmod 711 "${MyTempDir}"
 	# trap "rm -rf \"${MyTempDir}\" ; exit 0" 0 1 2 3 15
-	
+
 	# Install missing dependencies
 	which curl >/dev/null 2>&1 || apt-get -f -qq -y install curl
-	
+
 	# log current installed packages and other stuff
 	dpkg -l >"${MyTempDir}/packages-now.txt" &
-	echo -e "NodeRedMem=$(( $(free | awk -F" " '/^Mem:/ {print $2}') / 3072 ))" >"${MyTempDir}/environment.txt"
 	echo -e "DistroArchitecture=$(dpkg --print-architecture)" >>"${MyTempDir}/environment.txt"
 	echo -e "CPUArchitecture=$(uname -m)" >>"${MyTempDir}/environment.txt"
-	
+
 	# get some package names
 	apt-cache search php | grep sqlite | head -n1 | cut -f1 -d' ' >"${MyTempDir}/php-sqlite.pkg" &
-	
+
 	# export some internal functions
-	export -f GrabPhpLiteAdmin
-	
+	export -f GrabPhpLiteAdmin UnprivilegedInstallNodeRED
+
 	# check installation
-	
+
 	AdjustGroups ${Username} &
 } # PreRequisits
 
@@ -51,12 +131,12 @@ GrabPhpLiteAdmin() {
 	curl -sL -O ${phpLiteAdmin_URL}
 } # GrabPhpLiteAdmin
 
-InstallApache() {
+InstallApache() { # Apache2, SQLite, PHP and dependencies
 	echo -e "\nInstalling Apache2, SQLite, PHP and friends now (this can take some time)... \c"
 	# use meta package names so we get the right version on every distro
 	apt-get -f -qq -y install apache2 libapache2-mod-php sqlite3 $(cat "${MyTempDir}/php-sqlite.pkg") || \
 		(echo -e "\nSomething went wrong. Apache2 not installed." >&2 ; return)
-		
+
 	# continue with phpliteadmin
 	[ -d /var/www/html/phpliteadmin ] || mkdir -m 777 /var/www/html/phpliteadmin
 	cd /var/www/html/phpliteadmin/
@@ -72,7 +152,7 @@ InstallApache() {
 		-e "s#^\$subdirectories\(.*\)#\$subdirectories = true;#" /var/www/html/phpliteadmin/phpliteadmin.config.php
 	chmod 775 /var/www/html/phpliteadmin
 	chown -R www-data:www-data /var/www/html &
-	
+
 	# create SQLite database
 	[ -d "${UserHome}/dbs" ] || mkdir -m755 "${UserHome}/dbs"
 	[ -f ${UserHome}/dbs/iot.db" ] && rm ${UserHome}/dbs/iot.db"
@@ -153,7 +233,7 @@ EOF
 	systemctl restart apache2 &
 } # InstallApache
 
-InstallNodeJS() {
+InstallNodeJS() { # NodeJS
 	echo -e "\nInstalling NodeJS now (this can take some time)... \c"
 	ARMv6Version="node-v6.10.1-linux-armv6l"
 	. "${MyTempDir}/environment.txt"
@@ -161,8 +241,9 @@ InstallNodeJS() {
 	cd "${MyTempDir}/"
 	case ${CPUArchitecture} in
 		armv6*)
-			# Raspbian running on BCM2835, we need ARMv6 binaries
-			curl -sL -O https://nodejs.org/dist/latest-v6.x/${ARMv6Version}.tar.xz
+			# Raspbian/DietPi running on BCM2835, we need ARMv6 binaries
+			curl -sL -O https://nodejs.org/dist/latest-v6.x/${ARMv6Version}.tar.xz || \
+	 			(echo -e "\nSomething went wrong. Can't Install NodeJS. Aborting" >&2 ; exit 1)
 			pv ${ARMv6Version}.tar.xz | tar -xJf -
 			cd ${ARMv6Version}
 			cp -R * /usr/local/
@@ -170,8 +251,7 @@ InstallNodeJS() {
 			;;
 		*)
 	 		curl -sL -O https://deb.nodesource.com/setup_6.x
-	 		bash nodesetup.sh
-
+	 		bash setup_6.x
 			case ${DistroArchitecture} in
 				arm64)
 					# install armhf packages on arm64
@@ -186,11 +266,64 @@ InstallNodeJS() {
 	esac
 } # InstallNodeJS
 
-InstallNodeRED() {
-	:
+InstallNodeRED() { # Node-RED and nodes
+	which node >/dev/null 2>&1 || (echo -e "\nSomething went wrong. Can't find NodeJS. Aborting" >&2 ; exit 1)
+	echo -e "\nInstalling Node-RED now (this can take some time)... \c"
+
+	# check available RAM
+	AvailMem=$(( $(free | awk -F" " '/^Mem:/ {print $2}') / 3072 ))
+	[[ ${AvailMem} -lt 128 ]] && NodeRedMem=128 || NodeRedMem=${AvailMem}
+
+	# install only if settings.js has not been altered -- why?
+	if [ $(grep -c public "${UserHome}/.node-red/settings.js") -ne 1 ]; then
+		npm install -g --unsafe-perm node-red 			# why unsafe-perm?
+		curl -sL "https://raw.githubusercontent.com/node-red/raspbian-deb-package/master/resources/nodered.service" >/lib/systemd/system/nodered.service
+		curl -sL "https://raw.githubusercontent.com/node-red/raspbian-deb-package/master/resources/node-red-start" >/usr/bin/node-red-start
+		curl -sL "https://raw.githubusercontent.com/node-red/raspbian-deb-package/master/resources/node-red-stop" >/usr/bin/node-red-stop
+		sed -i -e "s#^User\(.*\)#User=${Username}#" -e "s#^Group\(.*\)#Group=${UserGID}#" \
+			-e "s#max-old-space-size\(.*\)#max-old-space-size=${NodeRedMem}\"#" \
+			-e "s#^WorkingDirectory\(.*\)#WorkingDirectory=${UserHome}#" /lib/systemd/system/nodered.service
+		chmod 755 /usr/bin/node-red-st* 				# why in /usr/bin and not /usr/local/bin?
+		systemctl daemon-reload
+	fi
+
+	mkdir -m775 "${UserHome}/.node-red"
+	cd "${UserHome}/.node-red"
+	chown ${Username}:${UserGID} "${UserHome}/.node-red"
+	chown -R ${Username}:${UserGID} "${UserHome}/node_modules"
+
+	echo -e "\nInstalling Nodes now (this can take some time)... \c"
+
+	# checking for Raspbian specific bits first
+	/bin/bash -n /etc/os-release && . /etc/os-release || \
+		(echo -e "\nSomething went wrong. Can't read /etc/os-release. Aborting" >&2 ; exit 1)
+	case ${ID} in
+		raspbian)
+			export Additional_Packages="node-red-contrib-gpio raspi-io"
+			sudo sed -i -e 's#exit 0#chmod 777 /dev/ttyAMA0\nexit 0#g' /etc/rc.local # better with udev?
+			apt-get -f -qq -y --no-install-recommends install python{,3}-rpi.gpio &
+			;;
+	esac
+	su ${Username} -c "bash -c UnprivilegedInstallNodeRED"
+	npm install bcryptjs
+
+	# sun is shining, will continue later
 } # InstallNodeRED
 
-InstallMosquitto() {
+UnprivilegedInstallNodeRED() {
+	npm install moment node-red-contrib-config node-red-contrib-grove node-red-contrib-bigtimer \
+		node-red-contrib-esplogin node-red-contrib-timeout node-red-node-openweathermap \
+		node-red-node-google node-red-node-sqlite node-red-node-emoncms node-red-node-geofence \
+		node-red-contrib-ivona node-red-contrib-moment node-red-contrib-particle \
+		node-red-contrib-web-worldmap node-red-contrib-graphs node-red-contrib-isonline \
+		node-red-node-ping node-red-node-random node-red-node-smooth node-red-contrib-npm \
+		node-red-contrib-file-function node-red-contrib-boolean-logic node-red-node-arduino \
+		node-red-contrib-blynk-websockets node-red-dashboard node-red-node-darksky \
+		node-red-node-serialport node-red-contrib-owntracks node-red-contrib-chatbot \
+		${Additional_Packages}
+} # UnprivilegedInstallNodeRED
+
+InstallMosquitto() { # Mosquitto with web sockets
 	/bin/bash -n /etc/os-release && . /etc/os-release || \
 		(echo -e "\nSomething went wrong. Can't read /etc/os-release. Aborting" >&2 ; exit 1)
 
@@ -214,7 +347,7 @@ InstallMosquitto() {
 	mosquitto_passwd -b /etc/mosquitto/passwords ${adminname} ${adminpass}
 } # InstallMosquitto
 
-InstallWebmin() {
+InstallWebmin() { # Webmin
 	echo -e "\nInstalling Webmin now (this can take some time)... \c"
 	curl -sL http://www.webmin.com/jcameron-key.asc | apt-key add -
 	echo "deb http://download.webmin.com/download/repository sarge contrib" >/etc/apt/sources.list.d/webmin.list
@@ -228,6 +361,4 @@ AdjustGroups() {
 	done
 } # AdjustGroups
 
-PreRequisits
-
-# Main "$@"
+Main "$@"
