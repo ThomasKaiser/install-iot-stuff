@@ -38,24 +38,14 @@ PreRequisits() {
 	apt-cache search php | grep sqlite | head -n1 | cut -f1 -d' ' >"${MyTempDir}/php-sqlite.pkg" &
 	
 	# export some internal functions
-	export -f GetPhpLiteAdminURL GrabPhpLiteAdmin
+	export -f GrabPhpLiteAdmin
 	
 	# check installation 
-	
-	phpLiteAdmin_URL=$(su ${Username} -c "bash -c GetPhpLiteAdminURL")
-	if [ -z ${phpLiteAdmin_URL} ]; then
-		echo -e "There's something wrong. Please check/fix your internet connectivity" >&2
-		echo -e "and then call \"sudo ${0##*/} $@\" again. Exiting" >&2
-		exit 1
-	fi
 } # PreRequisits
 
-GetPhpLiteAdminURL() {
-	curl -sL 'https://www.phpliteadmin.org/download/' | awk -F'"' '/bitbucket.org\/phpliteadmin\/public\/downloads\/phpLiteAdmin/ {print $2}'
-} # GetPhpLiteAdminURL
-
 GrabPhpLiteAdmin() {
-	curl -sL -O "${phpLiteAdmin_URL}"
+	phpLiteAdmin_URL=$(curl -sL 'https://www.phpliteadmin.org/download/' | awk -F'"' '/bitbucket.org\/phpliteadmin\/public\/downloads\/phpLiteAdmin/ {print $2}')
+	curl -sL -O ${phpLiteAdmin_URL}
 	curl -sL -O https://bitbucket.org/phpliteadmin/public/downloads/phpliteadmin_themes_2013-12-26.zip
 } # GrabPhpLiteAdmin
 
@@ -66,22 +56,24 @@ InstallApache() {
 		(echo -e "\nSomething went wrong. Apache2 not installed." >&2 ; return)
 		
 	# continue with phpliteadmin
-	mkdir -m 777 /var/www/html/phpliteadmin
+	[ -d /var/www/html/phpliteadmin ] || mkdir -m 777 /var/www/html/phpliteadmin
 	cd /var/www/html/phpliteadmin/
 	su ${Username} -c "bash -c GrabPhpLiteAdmin"
-	mkdir -m 775 themes && mv *themes*.zip themes/
+	[ -d themes ] || mkdir -m 775 themes
+	mv *themes*.zip themes/
 	unzip *.zip && rm *.zip || (echo -e "Something went wrong. PhpLiteAdmin not installed." >&2 ; return)
 	mv phpliteadmin.php index.php
 	mv phpliteadmin.config.sample.php phpliteadmin.config.php
-	cd themes/ && unzip phpliteadmin_themes_2013-12-26.zip && rm phpliteadmin_themes_2013-12-26.zip
+	(cd themes/ && unzip phpliteadmin_themes_2013-12-26.zip && rm phpliteadmin_themes_2013-12-26.zip) &
 	sed -i -e "s#^\$directory\(.*\)#\$directory = '${UserHome}/dbs/';#" \
 		-e "s#^\$password\(.*\)#\$password = '${adminpass}/';#" \
 		-e "s#^\$subdirectories\(.*\)#\$subdirectories = true;#" /var/www/html/phpliteadmin/phpliteadmin.config.php
 	chmod 775 /var/www/html/phpliteadmin
-	chown -R www-data:www-data /var/www/html
+	chown -R www-data:www-data /var/www/html &
 	
 	# create SQLite database
-	mkdir -m755 "${UserHome}/dbs"
+	[ -d "${UserHome}/dbs" ] || mkdir -m755 "${UserHome}/dbs"
+	[ -f ${UserHome}/dbs/iot.db" ] && rm ${UserHome}/dbs/iot.db"
 	sqlite3 "${UserHome}/dbs/iot.db" << EOF
 		CREATE TABLE IF NOT EXISTS \`pinDescription\` (
 		 \`pinID\` INTEGER PRIMARY KEY NOT NULL,
@@ -154,7 +146,7 @@ InstallApache() {
 		 \`timestamp\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP , FOREIGN KEY(DataID, DeviceID ) REFERENCES DeviceData(DAtaID, DeviceID )
 		);
 EOF
-	chown -R ${Username}:${UserGID} "${UserHome}/dbs"
+	chown -R ${Username}:${UserGID} "${UserHome}/dbs" &
 } # InstallApache
 
 InstallWebmin() {
