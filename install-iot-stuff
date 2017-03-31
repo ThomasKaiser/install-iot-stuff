@@ -5,7 +5,11 @@
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 PreRequisits() {
-	UserHome="$(awk -F":" "/^${SUDO_USER}:/ {print \$6}" < /etc/passwd)"
+	# TODO: If ${SUDO_USER} is not set then check whether installation
+	# happens from within image creation
+	Username="${SUDO_USER}"
+	UserGID="${SUDO_GID}"
+	UserHome="$(awk -F":" "/^${Username}:/ {print \$6}" < /etc/passwd)"
 	if [ ! -d "${UserHome}" ]; then
 		echo -e "There's something wrong. Please step back, create an unprivileged" >&2
 		echo -e "user account and then call \"sudo ${0##*/} $@\" again. Exiting" >&2
@@ -34,9 +38,11 @@ PreRequisits() {
 	apt-cache search php | grep sqlite | head -n1 | cut -f1 -d' ' >"${MyTempDir}/php-sqlite.pkg" &
 	
 	# export some internal functions
-	export -f GetPhpLiteAdminURL
+	export -f GetPhpLiteAdminURL GrabPhpLiteAdmin
 	
-	phpLiteAdmin_URL=$(su ${SUDO_USER} -c "bash -c GetPhpLiteAdminURL")
+	# check installation 
+	
+	phpLiteAdmin_URL=$(su ${Username} -c "bash -c GetPhpLiteAdminURL")
 	if [ -z ${phpLiteAdmin_URL} ]; then
 		echo -e "There's something wrong. Please check/fix your internet connectivity" >&2
 		echo -e "and then call \"sudo ${0##*/} $@\" again. Exiting" >&2
@@ -48,19 +54,122 @@ GetPhpLiteAdminURL() {
 	curl -sL 'https://www.phpliteadmin.org/download/' | awk -F'"' '/bitbucket.org\/phpliteadmin\/public\/downloads\/phpLiteAdmin/ {print $2}'
 } # GetPhpLiteAdminURL
 
+GrabPhpLiteAdmin() {
+	curl -sL -O "${phpLiteAdmin_URL}"
+	curl -sL -O https://bitbucket.org/phpliteadmin/public/downloads/phpliteadmin_themes_2013-12-26.zip
+} # GrabPhpLiteAdmin
+
 InstallApache() {
 	echo -e "\nInstalling Apache2, SQLite, PHP and friends now (this can take some time)... \c"
 	# use meta package names so we get the right version on every distro
-	apt-get -f -qq -y install apache2 libapache2-mod-php sqlite3 $(cat "${MyTempDir}/php-sqlite.pkg")
+	apt-get -f -qq -y install apache2 libapache2-mod-php sqlite3 $(cat "${MyTempDir}/php-sqlite.pkg") || \
+		(echo -e "\nSomething went wrong. Apache2 not installed." >&2 ; return)
+		
+	# continue with phpliteadmin
+	mkdir -m 777 /var/www/html/phpliteadmin
+	cd /var/www/html/phpliteadmin/
+	su ${Username} -c "bash -c GrabPhpLiteAdmin"
+	mkdir -m 775 themes && mv *themes*.zip themes/
+	unzip *.zip && rm *.zip || (echo -e "Something went wrong. PhpLiteAdmin not installed." >&2 ; return)
+	mv phpliteadmin.php index.php
+	mv phpliteadmin.config.sample.php phpliteadmin.config.php
+	cd themes/ && unzip phpliteadmin_themes_2013-12-26.zip && rm phpliteadmin_themes_2013-12-26.zip
+	sed -i -e "s#^\$directory\(.*\)#\$directory = '${UserHome}/dbs/';#" \
+		-e "s#^\$password\(.*\)#\$password = '${adminpass}/';#" \
+		-e "s#^\$subdirectories\(.*\)#\$subdirectories = true;#" /var/www/html/phpliteadmin/phpliteadmin.config.php
+	chmod 775 /var/www/html/phpliteadmin
+	chown -R www-data:www-data /var/www/html
+	
+	# create SQLite database
+	mkdir -m755 "${UserHome}/dbs"
+	sqlite3 "${UserHome}/dbs/iot.db" << EOF
+		CREATE TABLE IF NOT EXISTS \`pinDescription\` (
+		 \`pinID\` INTEGER PRIMARY KEY NOT NULL,
+		 \`pinNumber\` varchar(2) NOT NULL,
+		 \`pinDescription\` varchar(255) NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS \`pinDirection\` (
+		 \`pinID\` INTEGER PRIMARY KEY NOT NULL,
+		 \`pinNumber\` varchar(2) NOT NULL,
+		 \`pinDirection\` varchar(3) NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS \`pinStatus\` (
+		 \`pinID\` INTEGER PRIMARY KEY NOT NULL,
+		 \`pinNumber\` varchar(2)  NOT NULL,
+		 \`pinStatus\` varchar(1) NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS \`users\` (
+		 \`userID\` INTEGER PRIMARY KEY NOT NULL,
+		 \`username\` varchar(28) NOT NULL,
+		 \`password\` varchar(64) NOT NULL,
+		 \`salt\` varchar(8) NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS \`device_list\` (
+		 \`device_name\` varchar(80) NOT NULL DEFAULT '',
+		 \`device_description\` varchar(80) DEFAULT NULL,
+		 \`device_attribute\` varchar(80) DEFAULT NULL,
+		 \`logins\` int(11) DEFAULT NULL,
+		 \`creation_date\` datetime DEFAULT NULL,
+		 \`last_update\` datetime DEFAULT NULL,
+		 PRIMARY KEY (\`device_name\`)
+		);
+
+		CREATE TABLE IF NOT EXISTS \`readings\` (
+		 \`recnum\` INTEGER PRIMARY KEY,
+		 \`location\` varchar(20),
+		 \`value\` int(11) NOT NULL,
+		 \`logged\` timestamp not NULL DEFAULT CURRENT_TIMESTAMP ,
+		 \`device_name\` varchar(40) not null,
+		 \`topic\` varchar(40) not null
+		);
+
+		CREATE TABLE IF NOT EXISTS \`pins\` (
+		 \`gpio0\` int(11) NOT NULL DEFAULT '0',
+		 \`gpio1\` int(11) NOT NULL DEFAULT '0',
+		 \`gpio2\` int(11) NOT NULL DEFAULT '0',
+		 \`gpio3\` int(11) NOT NULL DEFAULT '0'
+		);
+		INSERT INTO PINS VALUES(0,0,0,0);
+		CREATE TABLE IF NOT EXISTS \`temperature_record\` (
+		 \`device_name\` varchar(64) NOT NULL,
+		 \`rec_num\` INTEGER PRIMARY KEY,
+		 \`temperature\` float NOT NULL,
+		 \`date_time\` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS \`Device\` (
+		 \`DeviceID\` INTEGER PRIMARY KEY,
+		 \`DeviceName\` TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS \`DeviceData\` (
+		 \`DataID\` INTEGER PRIMARY KEY,
+		DeviceID INTEGER,
+		 \`DataName\` TEXT, FOREIGN KEY(DeviceID ) REFERENCES Device(DeviceID)
+		);
+		CREATE TABLE IF NOT EXISTS \`Data\` (
+		SequenceID INTEGER PRIMARY KEY,
+		 \`DeviceID\` INTEGER NOT NULL,
+		 \`DataID\` INTEGER NOT NULL,
+		 \`DataValue\` NUMERIC NOT NULL,
+		 \`epoch\` NUMERIC NOT NULL,
+		 \`timestamp\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP , FOREIGN KEY(DataID, DeviceID ) REFERENCES DeviceData(DAtaID, DeviceID )
+		);
+EOF
+	chown -R ${Username}:${UserGID} "${UserHome}/dbs"
 } # InstallApache
 
 InstallWebmin() {
 	echo -e "\nInstalling Webmin now (this can take some time)... \c"
 	curl -sL http://www.webmin.com/jcameron-key.asc | apt-key add -
-    echo "deb http://download.webmin.com/download/repository sarge contrib" >/etc/apt/sources.list.d/webmin.list
-    apt-get -f -qq -y update
-    apt-get -f -qq -y --no-install-recommends install webmin
-} # 
+	echo "deb http://download.webmin.com/download/repository sarge contrib" >/etc/apt/sources.list.d/webmin.list
+	apt-get -f -qq -y update
+	apt-get -f -qq -y --no-install-recommends install webmin
+} # InstallWebmin
+
+AdjustGroups() {
+	for additionalgroup in adm gpio input sudo netdev audio video dialout plugdev bluetooth ; do
+		usermod -aG ${additionalgroup} ${Username} 2>/dev/null
+	done
+} # AdjustGroups
 
 PreRequisits
 
