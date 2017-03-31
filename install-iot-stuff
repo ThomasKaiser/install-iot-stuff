@@ -40,13 +40,15 @@ PreRequisits() {
 	# export some internal functions
 	export -f GrabPhpLiteAdmin
 	
-	# check installation 
+	# check installation
+	
+	AdjustGroups ${Username} &
 } # PreRequisits
 
 GrabPhpLiteAdmin() {
-	phpLiteAdmin_URL=$(curl -sL 'https://www.phpliteadmin.org/download/' | awk -F'"' '/bitbucket.org\/phpliteadmin\/public\/downloads\/phpLiteAdmin/ {print $2}')
-	curl -sL -O ${phpLiteAdmin_URL}
+	phpLiteAdmin_URL=$(curl -sL 'https://www.phpliteadmin.org/download/' | awk -F'"' '/bitbucket.org\/phpliteadmin\/public\/downloads\/phpLiteAdmin/ {print $2}') &
 	curl -sL -O https://bitbucket.org/phpliteadmin/public/downloads/phpliteadmin_themes_2013-12-26.zip
+	curl -sL -O ${phpLiteAdmin_URL}
 } # GrabPhpLiteAdmin
 
 InstallApache() {
@@ -61,7 +63,7 @@ InstallApache() {
 	su ${Username} -c "bash -c GrabPhpLiteAdmin"
 	[ -d themes ] || mkdir -m 775 themes
 	mv *themes*.zip themes/
-	unzip *.zip && rm *.zip || (echo -e "Something went wrong. PhpLiteAdmin not installed." >&2 ; return)
+	unzip *.zip && rm *.zip || (echo -e "\nSomething went wrong. PhpLiteAdmin not installed." >&2 ; return)
 	mv phpliteadmin.php index.php
 	mv phpliteadmin.config.sample.php phpliteadmin.config.php
 	(cd themes/ && unzip phpliteadmin_themes_2013-12-26.zip && rm phpliteadmin_themes_2013-12-26.zip) &
@@ -150,6 +152,34 @@ EOF
 	systemctl daemon-reload
 	systemctl restart apache2 &
 } # InstallApache
+
+InstallNodeRED() {
+	:
+} # InstallNodeRED
+
+InstallMosquitto() {
+	/bin/bash -n /etc/os-release && . /etc/os-release || \
+		(echo -e "\nSomething went wrong. Can't read /etc/os-release. Aborting" >&2 ; exit 1)
+
+	echo -e "\nInstalling Mosquitto now (this can take some time)... \c"
+	case ${VERSION_ID} in
+		9|16.*)
+			# Ubuntu Xenial or Debian Stretch -- already in repositories so do nothing
+			:
+			;;
+		*)
+			# Jessie and others
+			curl -sL "http://repo.mosquitto.org/debian/mosquitto-repo.gpg.key" -O - | apt-key add -
+			echo "deb http://repo.mosquitto.org/debian jessie main" > /etc/apt/sources.list.d/mosquitto-jessie.list
+			apt-get -f -qq -y update
+			;;
+	esac
+	apt-get -f -qq -y --no-install-recommends install mosquitto mosquitto-clients || \
+		(echo -e "\nSomething went wrong. Can't Install Mosquitto. Aborting" >&2 ; return)
+	echo -e "listener 9001\nprotocol websockets\nlistener 1883\nallow_anonymous false\npassword_file /etc/mosquitto/passwords" >/etc/mosquitto/conf.d/websockets.conf
+	touch /etc/mosquitto/passwords # why?
+	mosquitto_passwd -b /etc/mosquitto/passwords ${adminname} ${adminpass}
+} # InstallMosquitto
 
 InstallWebmin() {
 	echo -e "\nInstalling Webmin now (this can take some time)... \c"
