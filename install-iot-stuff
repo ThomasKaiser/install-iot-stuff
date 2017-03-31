@@ -153,6 +153,39 @@ EOF
 	systemctl restart apache2 &
 } # InstallApache
 
+InstallNodeJS() {
+	echo -e "\nInstalling NodeJS now (this can take some time)... \c"
+	ARMv6Version="node-v6.10.1-linux-armv6l"
+	. "${MyTempDir}/environment.txt"
+	unset ARCHSUFFIX
+	cd "${MyTempDir}/"
+	case ${CPUArchitecture} in
+		armv6*)
+			# Raspbian running on BCM2835, we need ARMv6 binaries
+			curl -sL -O https://nodejs.org/dist/latest-v6.x/${ARMv6Version}.tar.xz
+			pv ${ARMv6Version}.tar.xz | tar -xJf -
+			cd ${ARMv6Version}
+			cp -R * /usr/local/
+			hash -r &
+			;;
+		*)
+	 		curl -sL -O https://deb.nodesource.com/setup_6.x
+	 		bash nodesetup.sh
+
+			case ${DistroArchitecture} in
+				arm64)
+					# install armhf packages on arm64
+					dpkg --add-architecture armhf
+					ARCHSUFFIX=':armhf'
+					sed -i -e 's/ https/ [arch=armhf] https/' /etc/apt/sources.list.d/nodesource.list
+	 			;;
+	 		esac
+	 		apt-get -f -qq -y --no-install-recommends install nodejs${ARCHSUFFIX} || \
+	 			(echo -e "\nSomething went wrong. Can't Install NodeJS. Aborting" >&2 ; exit 1)
+		;;
+	esac
+} # InstallNodeJS
+
 InstallNodeRED() {
 	:
 } # InstallNodeRED
