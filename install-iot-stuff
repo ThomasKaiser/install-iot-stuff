@@ -147,6 +147,8 @@ InstallApache() {
 		);
 EOF
 	chown -R ${Username}:${UserGID} "${UserHome}/dbs" &
+	systemctl daemon-reload
+	systemctl restart apache2 &
 } # InstallApache
 
 InstallWebmin() {
